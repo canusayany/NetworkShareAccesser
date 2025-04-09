@@ -269,9 +269,9 @@ public class Program
     {
         // 网络共享配置信息
         string ip = "192.168.1.150";
-        string username = "bioyond";
-        string password = "bioyond";
-        string shareName = @"Users\BiOptic_user\AppData\Roaming\Q-Analyzer-Beta for Qsep400 Network Mode";
+        string username = "*";
+        string password = "*";
+        string shareName = @"Users";
         string networkPath = $"\\\\{ip}\\{shareName}";
 
         Console.WriteLine($"尝试连接到 {networkPath}");
