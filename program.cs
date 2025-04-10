@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 
-namespace BR.ECS.DeviceDriver.HTBA.HouzeQSEP400;
+namespace tt;
 /// <summary>
 /// 网络共享配置类
 /// </summary>
@@ -17,12 +17,12 @@ public class ShareConfig
     /// <summary>
     /// 用户名
     /// </summary>
-    public string Username { get; set; } = "bioyond";
+    public string Username { get; set; } = "q";
 
     /// <summary>
     /// 密码
     /// </summary>
-    public string Password { get; set; } = "bioyond";
+    public string Password { get; set; } = "q";
 
     /// <summary>
     /// 共享文件夹名称
