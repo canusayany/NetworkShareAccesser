@@ -1,13 +1,598 @@
-using System.Runtime.InteropServices;
-using System.Diagnostics;
 using System.ComponentModel;
-using System.Net;
-using System;
-using System.IO;
-using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 
-namespace ConsoleApp56;
+namespace BR.ECS.DeviceDriver.HTBA.HouzeQSEP400;
+/// <summary>
+/// 网络共享配置类
+/// </summary>
+public class ShareConfig
+{
+    /// <summary>
+    /// 远程服务器IP地址
+    /// </summary>
+    public string RemoteIP { get; set; } = "192.168.1.150";
+
+    /// <summary>
+    /// 用户名
+    /// </summary>
+    public string Username { get; set; } = "bioyond";
+
+    /// <summary>
+    /// 密码
+    /// </summary>
+    public string Password { get; set; } = "bioyond";
+
+    /// <summary>
+    /// 共享文件夹名称
+    /// </summary>
+    public string ShareName { get; set; } = @"Result";
+
+    /// <summary>
+    /// 本地保存基础路径
+    /// </summary>
+    public string LocalBasePath { get; set; } = "./";
+
+    /// <summary>
+    /// 配置文件路径
+    /// </summary>
+    private static readonly string ConfigFilePath = Path.Combine(
+        (AppDomain.CurrentDomain.BaseDirectory),
+        "config.json");
+
+    /// <summary>
+    /// 获取网络路径
+    /// </summary>
+    public string GetNetworkPath()
+    {
+        return $"\\\\{RemoteIP}\\{ShareName}";
+    }
+
+    /// <summary>
+    /// 获取或创建本地保存路径
+    /// </summary>
+    public string GetLocalBasePath()
+    {
+        if (string.IsNullOrEmpty(LocalBasePath))
+        {
+            LocalBasePath = Path.Combine(
+        (AppDomain.CurrentDomain.BaseDirectory)
+
+            );
+        }
+
+        // 确保目录存在
+        if (!Directory.Exists(LocalBasePath))
+        {
+            Directory.CreateDirectory(LocalBasePath);
+        }
+
+        return LocalBasePath;
+    }
+
+    /// <summary>
+    /// 保存配置到文件
+    /// </summary>
+    public void SaveConfig()
+    {
+        try
+        {
+            // 确保目录存在
+            string configDir = Path.GetDirectoryName(ConfigFilePath);
+            if (!Directory.Exists(configDir))
+            {
+                Directory.CreateDirectory(configDir);
+            }
+
+            // 序列化配置到JSON文件
+            var options = new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+            };
+
+            string jsonString = JsonSerializer.Serialize(this, options);
+            File.WriteAllText(ConfigFilePath, jsonString);
+
+            Console.WriteLine($"配置已保存到: {ConfigFilePath}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"保存配置时出错: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 从文件加载配置
+    /// </summary>
+    /// <returns>加载的配置</returns>
+    public static ShareConfig LoadConfig()
+    {
+        try
+        {
+            if (File.Exists(ConfigFilePath))
+            {
+                string jsonString = File.ReadAllText(ConfigFilePath);
+                var config = JsonSerializer.Deserialize<ShareConfig>(jsonString);
+                Console.WriteLine("已成功加载配置文件");
+                return config;
+            }
+            else
+            {
+                Console.WriteLine("配置文件不存在，使用默认配置");
+                var defaultConfig = new ShareConfig();
+                defaultConfig.SaveConfig();
+                return defaultConfig;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"加载配置时出错: {ex.Message}");
+            return new ShareConfig();
+        }
+    }
+}
+
+/// <summary>
+/// Windows网络共享访问封装类
+/// </summary>
+public class NetworkShareManager : IDisposable
+{
+    private ShareConfig _config;
+    private NetworkShareAccesser _accesser;
+    private bool _isConnected = false;
+    private bool _disposed = false;
+
+    /// <summary>
+    /// 创建共享管理器实例
+    /// </summary>
+    /// <param name="useConfigFile">是否使用配置文件</param>
+    public NetworkShareManager(bool useConfigFile = true)
+    {
+        if (useConfigFile)
+        {
+            _config = ShareConfig.LoadConfig();
+        }
+        else
+        {
+            _config = new ShareConfig();
+        }
+
+        InitializeAccesser();
+    }
+
+    /// <summary>
+    /// 使用指定配置创建共享管理器实例
+    /// </summary>
+    /// <param name="config">共享配置</param>
+    public NetworkShareManager(ShareConfig config)
+    {
+        _config = config ?? new ShareConfig();
+        InitializeAccesser();
+    }
+
+    /// <summary>
+    /// 初始化网络访问器
+    /// </summary>
+    private void InitializeAccesser()
+    {
+        string networkPath = _config.GetNetworkPath();
+        _accesser = new NetworkShareAccesser(
+            networkPath,
+            _config.Username,
+            _config.Password
+        );
+    }
+
+    /// <summary>
+    /// 尝试连接到共享
+    /// </summary>
+    /// <returns>是否连接成功</returns>
+    public bool Connect()
+    {
+        try
+        {
+            Console.WriteLine($"尝试连接到: {_config.GetNetworkPath()}");
+
+            try
+            {
+                // 首先尝试直接访问
+                string[] files = Directory.GetFiles(_config.GetNetworkPath());
+                Console.WriteLine($"直接访问成功，找到 {files.Length} 个文件");
+                _isConnected = true;
+                return true;
+            }
+            catch
+            {
+                // 如果直接访问失败，尝试使用凭据连接
+                _isConnected = _accesser.Connect();
+                if (_isConnected)
+                {
+                    Console.WriteLine("连接成功！");
+                }
+                return _isConnected;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"连接失败: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 断开连接
+    /// </summary>
+    public void Disconnect()
+    {
+        if (_isConnected)
+        {
+            _accesser.Disconnect();
+            _isConnected = false;
+            Console.WriteLine("已断开连接");
+        }
+    }
+
+    /// <summary>
+    /// 获取文件列表
+    /// </summary>
+    /// <returns>文件列表</returns>
+    public List<string> GetFiles()
+    {
+        EnsureConnected();
+        return _accesser.GetFiles();
+    }
+
+    /// <summary>
+    /// 获取目录列表
+    /// </summary>
+    /// <returns>目录列表</returns>
+    public List<string> GetDirectories()
+    {
+        EnsureConnected();
+        return _accesser.GetDirectories();
+    }
+
+    /// <summary>
+    /// 查找指定后缀的文件并按照时间排序
+    /// </summary>
+    /// <param name="extension">文件后缀，如".txt"、".csv"等，不区分大小写</param>
+    /// <param name="count">要获取的文件数量，默认为10</param>
+    /// <param name="ascending">是否按时间升序排序（旧的文件在前），默认为false（新的文件在前）</param>
+    /// <param name="searchOption">搜索选项，默认只搜索当前文件夹</param>
+    /// <returns>排序后的文件信息列表</returns>
+    public List<FileInfo> FindFilesByExtension(string extension, int count = 10, bool ascending = false, SearchOption searchOption = SearchOption.TopDirectoryOnly)
+    {
+        EnsureConnected();
+        return _accesser.FindFilesByExtension(extension, count, ascending, searchOption);
+    }
+
+    /// <summary>
+    /// 确保已连接
+    /// </summary>
+    private void EnsureConnected()
+    {
+        if (!_isConnected)
+        {
+            if (!Connect())
+            {
+                throw new InvalidOperationException("未连接到网络共享");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 将网络共享中的文件复制到本地
+    /// </summary>
+    /// <param name="remoteFileName">远程文件名</param>
+    /// <param name="localSubPath">本地子路径，相对于基础路径</param>
+    /// <param name="overwrite">是否覆盖</param>
+    /// <returns>是否成功</returns>
+    public static bool CopyFileToLocal(string networkPath, string username, string password, string remoteFileName, string localPath, bool overwrite = true)
+    {
+        try
+        {
+            using (var accesser = new NetworkShareAccesser(networkPath, username, password))
+            {
+                if (accesser.Connect())
+                {
+                    string remoteFilePath = Path.Combine(networkPath, remoteFileName);
+
+                    // 确保目标目录存在
+                    string localDirectory = Path.GetDirectoryName(localPath);
+                    if (!Directory.Exists(localDirectory))
+                    {
+                        Directory.CreateDirectory(localDirectory);
+                    }
+
+                    File.Copy(remoteFilePath, localPath, overwrite);
+
+                    // 验证文件是否成功复制
+                    if (File.Exists(localPath))
+                    {
+                        Console.WriteLine($"文件 {remoteFileName} 已成功复制到 {localPath}");
+                        return true;
+                    }
+                    else
+                    {
+                        Console.WriteLine($"文件复制失败: {remoteFileName}");
+                        return false;
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"无法连接到网络共享: {networkPath}");
+                    return false;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"复制文件时出错: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 复制指定后缀和时间条件的文件到本地
+    /// </summary>
+    /// <param name="networkPath">网络共享路径</param>
+    /// <param name="username">用户名</param>
+    /// <param name="password">密码</param>
+    /// <param name="extension">文件后缀</param>
+    /// <param name="count">要复制的文件数量</param>
+    /// <param name="localDirectoryPath">本地保存目录</param>
+    /// <param name="ascending">是否按时间升序排序</param>
+    /// <param name="overwrite">是否覆盖已存在的文件</param>
+    /// <param name="searchOption">搜索选项，默认搜索所有子文件夹</param>
+    /// <returns>成功复制的文件数量</returns>
+    public static int CopyLatestFilesByExtension(string networkPath, string username, string password,
+                                               string extension, int count, string localDirectoryPath,
+                                               bool ascending = false, bool overwrite = true,
+                                               SearchOption searchOption = SearchOption.AllDirectories)
+    {
+        int successCount = 0;
+
+        try
+        {
+            using (var accesser = new NetworkShareAccesser(networkPath, username, password))
+            {
+                if (accesser.Connect())
+                {
+                    // 查找符合条件的文件
+                    var files = accesser.FindFilesByExtension(extension, count, ascending, searchOption);
+
+                    if (files.Count == 0)
+                    {
+                        Console.WriteLine($"没有找到符合条件的 {extension} 文件");
+                        return 0;
+                    }
+
+                    // 确保本地目录存在
+                    if (!Directory.Exists(localDirectoryPath))
+                    {
+                        Directory.CreateDirectory(localDirectoryPath);
+                    }
+
+                    // 复制每个文件
+                    foreach (var file in files)
+                    {
+                        try
+                        {
+                            // 获取相对于网络共享根目录的路径
+                            string relativePath = file.FullName.Substring(networkPath.Length).TrimStart('\\');
+                            // 创建本地子目录结构
+                            string localSubDir = Path.GetDirectoryName(relativePath);
+
+                            if (!string.IsNullOrEmpty(localSubDir))
+                            {
+                                string fullLocalSubDir = Path.Combine(localDirectoryPath, localSubDir);
+                                if (!Directory.Exists(fullLocalSubDir))
+                                {
+                                    Directory.CreateDirectory(fullLocalSubDir);
+                                }
+                            }
+
+                            // 构建完整的本地文件路径
+                            string localFilePath = Path.Combine(localDirectoryPath, relativePath);
+
+                            // 复制文件
+                            File.Copy(file.FullName, localFilePath, overwrite);
+
+                            // 验证复制是否成功
+                            if (File.Exists(localFilePath))
+                            {
+                                Console.WriteLine($"文件 {relativePath} 已成功复制到 {localFilePath}");
+                                successCount++;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"复制文件 {file.FullName} 时出错: {ex.Message}");
+                        }
+                    }
+
+                    Console.WriteLine($"成功复制 {successCount}/{files.Count} 个文件到 {localDirectoryPath}");
+                }
+                else
+                {
+                    Console.WriteLine($"无法连接到网络共享: {networkPath}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"复制文件时出错: {ex.Message}");
+        }
+
+        return successCount;
+    }
+
+    /// <summary>
+    /// 复制指定后缀和时间条件的文件到本地（使用配置文件）
+    /// </summary>
+    /// <param name="extension">文件后缀</param>
+    /// <param name="count">要复制的文件数量</param>
+    /// <param name="localDirectoryPath">本地保存目录</param>
+    /// <param name="ascending">是否按时间升序排序</param>
+    /// <param name="overwrite">是否覆盖已存在的文件</param>
+    /// <param name="searchOption">搜索选项，默认搜索所有子文件夹</param>
+    /// <returns>成功复制的文件数量</returns>
+    public static int CopyLatestFilesByExtension(
+        string extension, int count, string localDirectoryPath,
+        bool ascending = false, bool overwrite = true,
+        SearchOption searchOption = SearchOption.AllDirectories)
+    {
+        // 加载配置
+        var config = ShareConfig.LoadConfig();
+        string networkPath = config.GetNetworkPath();
+
+        // 调用完整版本的方法
+        return CopyLatestFilesByExtension(
+            networkPath,
+            config.Username,
+            config.Password,
+            extension,
+            count,
+            localDirectoryPath,
+            ascending,
+            overwrite,
+            searchOption
+        );
+    }
+
+    /// <summary>
+    /// 复制指定后缀和时间条件的文件到本地（使用配置对象）
+    /// </summary>
+    /// <param name="config">共享配置对象</param>
+    /// <param name="extension">文件后缀</param>
+    /// <param name="count">要复制的文件数量</param>
+    /// <param name="localDirectoryPath">本地保存目录</param>
+    /// <param name="ascending">是否按时间升序排序</param>
+    /// <param name="overwrite">是否覆盖已存在的文件</param>
+    /// <param name="searchOption">搜索选项，默认搜索所有子文件夹</param>
+    /// <returns>成功复制的文件数量</returns>
+    public static int CopyLatestFilesByExtension(
+        ShareConfig config,
+        string extension, int count, string localDirectoryPath,
+        bool ascending = false, bool overwrite = true,
+        SearchOption searchOption = SearchOption.AllDirectories)
+    {
+        if (config == null)
+        {
+            config = ShareConfig.LoadConfig();
+        }
+        string networkPath = config.GetNetworkPath();
+
+        // 调用完整版本的方法
+        return CopyLatestFilesByExtension(
+            networkPath,
+            config.Username,
+            config.Password,
+            extension,
+            count,
+            localDirectoryPath,
+            ascending,
+            overwrite,
+            searchOption
+        );
+    }
+
+    /// <summary>
+    /// 保存当前配置到文件
+    /// </summary>
+    public void SaveConfig()
+    {
+        _config.SaveConfig();
+    }
+
+    /// <summary>
+    /// 更新配置
+    /// </summary>
+    /// <param name="ip">IP地址</param>
+    /// <param name="username">用户名</param>
+    /// <param name="password">密码</param>
+    /// <param name="shareName">共享名</param>
+    /// <param name="localBasePath">本地保存路径</param>
+    /// <param name="saveToFile">是否保存到文件</param>
+    public void UpdateConfig(string ip = null, string username = null, string password = null, string shareName = null, string localBasePath = null, bool saveToFile = true)
+    {
+        bool changed = false;
+
+        if (ip != null && _config.RemoteIP != ip)
+        {
+            _config.RemoteIP = ip;
+            changed = true;
+        }
+
+        if (username != null && _config.Username != username)
+        {
+            _config.Username = username;
+            changed = true;
+        }
+
+        if (password != null && _config.Password != password)
+        {
+            _config.Password = password;
+            changed = true;
+        }
+
+        if (shareName != null && _config.ShareName != shareName)
+        {
+            _config.ShareName = shareName;
+            changed = true;
+        }
+
+        if (localBasePath != null && _config.LocalBasePath != localBasePath)
+        {
+            _config.LocalBasePath = localBasePath;
+            changed = true;
+        }
+
+        if (changed)
+        {
+            // 更新访问器
+            Disconnect();
+            InitializeAccesser();
+
+            if (saveToFile)
+            {
+                _config.SaveConfig();
+            }
+        }
+    }
+
+    /// <summary>
+    /// 实现IDisposable接口
+    /// </summary>
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    /// <summary>
+    /// 释放资源
+    /// </summary>
+    /// <param name="disposing">是否由Dispose方法调用</param>
+    protected virtual void Dispose(bool disposing)
+    {
+        if (!_disposed)
+        {
+            if (disposing)
+            {
+                // 释放托管资源
+                if (_accesser != null)
+                {
+                    _accesser.Dispose();
+                    _accesser = null;
+                }
+            }
+            _disposed = true;
+        }
+    }
+}
 
 /// <summary>
 /// Windows网络共享访问类
@@ -249,163 +834,234 @@ public class NetworkShareAccesser : IDisposable
     }
 
     /// <summary>
+    /// 查找指定后缀的文件并按照时间排序
+    /// </summary>
+    /// <param name="extension">文件后缀，如".txt"、".csv"等，不区分大小写</param>
+    /// <param name="count">要获取的文件数量，默认为10</param>
+    /// <param name="ascending">是否按时间升序排序（旧的文件在前），默认为false（新的文件在前）</param>
+    /// <param name="searchOption">搜索选项，默认只搜索当前文件夹</param>
+    /// <returns>排序后的文件信息列表</returns>
+    public List<FileInfo> FindFilesByExtension(string extension, int count = 10, bool ascending = false, SearchOption searchOption = SearchOption.TopDirectoryOnly)
+    {
+        try
+        {
+            // 确保扩展名以点开头
+            if (!string.IsNullOrEmpty(extension) && !extension.StartsWith("."))
+            {
+                extension = "." + extension;
+            }
+
+            // 获取所有文件
+            string[] files;
+            if (string.IsNullOrEmpty(extension))
+            {
+                files = Directory.GetFiles(_networkName, "*.*", searchOption);
+            }
+            else
+            {
+                files = Directory.GetFiles(_networkName, $"*{extension}", searchOption);
+            }
+
+            // 转换为FileInfo对象列表，以便获取创建时间和修改时间
+            var fileInfos = files.Select(f => new FileInfo(f)).ToList();
+
+            // 按照修改时间排序
+            if (ascending)
+            {
+                // 升序：旧的在前
+                fileInfos = fileInfos.OrderBy(f => f.LastWriteTime).ToList();
+            }
+            else
+            {
+                // 降序：新的在前
+                fileInfos = fileInfos.OrderByDescending(f => f.LastWriteTime).ToList();
+            }
+
+            // 返回指定数量的文件
+            return fileInfos.Take(count).ToList();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"查找文件失败: {ex.Message}");
+            return new List<FileInfo>();
+        }
+    }
+
+    /// <summary>
+    /// 查找指定后缀的文件并按照创建时间排序
+    /// </summary>
+    /// <param name="extension">文件后缀，如".txt"、".csv"等，不区分大小写</param>
+    /// <param name="count">要获取的文件数量，默认为10</param>
+    /// <param name="ascending">是否按时间升序排序（旧的文件在前），默认为false（新的文件在前）</param>
+    /// <param name="searchOption">搜索选项，默认只搜索当前文件夹</param>
+    /// <returns>排序后的文件信息列表</returns>
+    public List<FileInfo> FindFilesByExtensionByCreationTime(string extension, int count = 10, bool ascending = false, SearchOption searchOption = SearchOption.TopDirectoryOnly)
+    {
+        try
+        {
+            // 确保扩展名以点开头
+            if (!string.IsNullOrEmpty(extension) && !extension.StartsWith("."))
+            {
+                extension = "." + extension;
+            }
+
+            // 获取所有文件
+            string[] files;
+            if (string.IsNullOrEmpty(extension))
+            {
+                files = Directory.GetFiles(_networkName, "*.*", searchOption);
+            }
+            else
+            {
+                files = Directory.GetFiles(_networkName, $"*{extension}", searchOption);
+            }
+
+            // 转换为FileInfo对象列表，以便获取创建时间
+            var fileInfos = files.Select(f => new FileInfo(f)).ToList();
+
+            // 按照创建时间排序
+            if (ascending)
+            {
+                // 升序：旧的在前
+                fileInfos = fileInfos.OrderBy(f => f.CreationTime).ToList();
+            }
+            else
+            {
+                // 降序：新的在前
+                fileInfos = fileInfos.OrderByDescending(f => f.CreationTime).ToList();
+            }
+
+            // 返回指定数量的文件
+            return fileInfos.Take(count).ToList();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"查找文件失败: {ex.Message}");
+            return new List<FileInfo>();
+        }
+    }
+
+    /// <summary>
+    /// 将网络共享中的文件复制到本地计算机
+    /// </summary>
+    /// <param name="remoteFileName">要复制的远程文件名或相对路径</param>
+    /// <param name="localFilePath">本地保存路径，包括文件名</param>
+    /// <param name="overwrite">如果本地文件已存在，是否覆盖</param>
+    /// <returns>复制是否成功</returns>
+    public bool CopyFileToLocal(string remoteFileName, string localFilePath, bool overwrite = true)
+    {
+        try
+        {
+            // 构建远程文件的完整路径
+            string remoteFilePath = Path.Combine(_networkName, remoteFileName);
+
+            // 确保目标目录存在
+            string localDirectory = Path.GetDirectoryName(localFilePath);
+            if (!Directory.Exists(localDirectory))
+            {
+                Directory.CreateDirectory(localDirectory);
+            }
+
+            // 复制文件
+            File.Copy(remoteFilePath, localFilePath, overwrite);
+
+            // 验证文件是否成功复制
+            if (File.Exists(localFilePath))
+            {
+                Console.WriteLine($"文件 {remoteFileName} 已成功复制到 {localFilePath}");
+                return true;
+            }
+            else
+            {
+                Console.WriteLine($"文件复制失败: {remoteFileName}");
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"复制文件时出错: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 将多个网络共享文件复制到本地计算机的同一目录
+    /// </summary>
+    /// <param name="remoteFileNames">要复制的远程文件名列表</param>
+    /// <param name="localDirectoryPath">本地保存目录路径</param>
+    /// <param name="overwrite">如果本地文件已存在，是否覆盖</param>
+    /// <returns>成功复制的文件数量</returns>
+    public int CopyFilesToLocal(List<string> remoteFileNames, string localDirectoryPath, bool overwrite = true)
+    {
+        int successCount = 0;
+
+        // 确保目标目录存在
+        if (!Directory.Exists(localDirectoryPath))
+        {
+            Directory.CreateDirectory(localDirectoryPath);
+        }
+
+        foreach (var remoteFileName in remoteFileNames)
+        {
+            try
+            {
+                // 获取文件名部分
+                string fileName = Path.GetFileName(remoteFileName);
+                // 构建本地完整路径
+                string localFilePath = Path.Combine(localDirectoryPath, fileName);
+                // 调用单文件复制方法
+                if (CopyFileToLocal(remoteFileName, localFilePath, overwrite))
+                {
+                    successCount++;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"复制文件 {remoteFileName} 时出错: {ex.Message}");
+            }
+        }
+
+        Console.WriteLine($"成功复制 {successCount}/{remoteFileNames.Count} 个文件到 {localDirectoryPath}");
+        return successCount;
+    }
+
+    /// <summary>
+    /// 复制指定后缀和时间条件的文件到本地
+    /// </summary>
+    /// <param name="extension">文件后缀</param>
+    /// <param name="count">要复制的文件数量</param>
+    /// <param name="localDirectoryPath">本地保存目录</param>
+    /// <param name="ascending">是否按时间升序排序</param>
+    /// <param name="overwrite">是否覆盖已存在的文件</param>
+    /// <param name="searchOption">搜索选项，默认只搜索当前文件夹</param>
+    /// <returns>成功复制的文件数量</returns>
+    public int CopyLatestFilesByExtensionToLocal(string extension, int count, string localDirectoryPath, bool ascending = false, bool overwrite = true, SearchOption searchOption = SearchOption.TopDirectoryOnly)
+    {
+        // 查找符合条件的文件
+        var files = FindFilesByExtension(extension, count, ascending, searchOption);
+        if (files.Count == 0)
+        {
+            Console.WriteLine($"没有找到符合条件的 {extension} 文件");
+            return 0;
+        }
+
+        // 准备文件名列表，保持相对路径
+        var fileNames = files.Select(f =>
+        {
+            // 获取相对于网络共享根目录的路径
+            string relativePath = f.FullName.Substring(_networkName.Length).TrimStart('\\');
+            return relativePath;
+        }).ToList();
+
+        // 复制文件
+        return CopyFilesToLocal(fileNames, localDirectoryPath, overwrite);
+    }
+
+    /// <summary>
     /// 实现IDisposable接口
     /// </summary>
     public void Dispose()
     {
         Disconnect();
-    }
-}
-
-/// <summary>
-/// 程序入口类
-/// </summary>
-public class Program
-{
-    /// <summary>
-    /// 主函数
-    /// </summary>
-    public static void Main(string[] args)
-    {
-        // 网络共享配置信息
-        string ip = "192.168.1.150";
-        string username = "*";
-        string password = "*";
-        string shareName = @"Users";
-        string networkPath = $"\\\\{ip}\\{shareName}";
-
-        Console.WriteLine($"尝试连接到 {networkPath}");
-        Console.WriteLine("当前运行的Windows账户: " + Environment.UserName);
-
-        try
-        {
-            // 先尝试直接访问
-            Console.WriteLine("\n=== 尝试直接访问共享路径 ===");
-            bool directAccessSuccess = false;
-            try
-            {
-                string[] files = Directory.GetFiles(networkPath);
-                Console.WriteLine($"直接访问成功，找到 {files.Length} 个文件");
-                directAccessSuccess = true;
-
-                Console.WriteLine("\n文件列表:");
-                foreach (var file in files)
-                {
-                    Console.WriteLine($"- {Path.GetFileName(file)}");
-                }
-
-                string[] dirs = Directory.GetDirectories(networkPath);
-                Console.WriteLine($"\n找到 {dirs.Length} 个目录");
-                Console.WriteLine("\n目录列表:");
-                foreach (var dir in dirs)
-                {
-                    Console.WriteLine($"- {Path.GetFileName(dir)}");
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"直接访问失败: {ex.Message}");
-            }
-
-            if (!directAccessSuccess)
-            {
-                // 使用NetworkShareAccesser尝试连接
-                Console.WriteLine("\n=== 尝试使用NetworkShareAccesser连接 ===");
-                
-                // 尝试不同的凭据组合
-                var credentialOptions = new List<(string username, string password, string domain, string desc)>
-                {
-                    (username, password, "", "标准凭据"),
-                    ("", "", "", "无凭据"),
-                    (Environment.UserName, "", "", "当前Windows用户"),
-                    (username, password, ip, "使用IP作为域的凭据")
-                };
-
-                bool connected = false;
-                foreach (var option in credentialOptions)
-                {
-                    if (connected) break;
-                    
-                    Console.WriteLine($"\n尝试使用 {option.desc}");
-                    using (var accesser = new NetworkShareAccesser(networkPath, option.username, option.password, option.domain, true))
-                    {
-                        try
-                        {
-                            connected = accesser.Connect();
-                            if (connected)
-                            {
-                                Console.WriteLine($"使用 {option.desc} 连接成功！");
-                                
-                                // 获取并显示文件列表
-                                Console.WriteLine("\n文件列表:");
-                                var files = accesser.GetFiles();
-                                if (files.Count > 0)
-                                {
-                                    foreach (var file in files)
-                                    {
-                                        Console.WriteLine($"- {Path.GetFileName(file)}");
-                                    }
-                                }
-                                else
-                                {
-                                    Console.WriteLine("没有找到文件");
-                                }
-
-                                // 获取并显示文件夹列表
-                                Console.WriteLine("\n文件夹列表:");
-                                var directories = accesser.GetDirectories();
-                                if (directories.Count > 0)
-                                {
-                                    foreach (var dir in directories)
-                                    {
-                                        Console.WriteLine($"- {Path.GetFileName(dir)}");
-                                    }
-                                }
-                                else
-                                {
-                                    Console.WriteLine("没有找到文件夹");
-                                }
-
-                                // 尝试读取一个文件（如果有）
-                                if (files.Count > 0)
-                                {
-                                    string firstFile = Path.GetFileName(files[0]);
-                                    Console.WriteLine($"\n读取文件 {firstFile} 的内容:");
-                                    try
-                                    {
-                                        string content = accesser.ReadFileText(firstFile);
-                                        Console.WriteLine(content.Length > 100 ? content.Substring(0, 100) + "..." : content);
-                                    }
-                                    catch (Exception ex)
-                                    {
-                                        Console.WriteLine($"读取文件失败: {ex.Message}");
-                                    }
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"使用 {option.desc} 连接失败: {ex.Message}");
-                        }
-                    }
-                }
-
-                if (!connected)
-                {
-                    Console.WriteLine("\n所有连接方法都失败了！");
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"错误: {ex.Message}");
-            if (ex.InnerException != null)
-            {
-                Console.WriteLine($"内部错误: {ex.InnerException.Message}");
-            }
-        }
-
-        Console.WriteLine("\n按任意键退出...");
-        Console.ReadKey();
     }
 }
